@@ -115,6 +115,7 @@ export async function importBloggerData(
         await prisma.post.update({
           where: { id: existingId },
           data: {
+            title, // refresh (slug stays stable) so corrected decoding propagates
             excerpt: summary,
             bodyHtml: safeHtml,
             heroImageUrl: post.imageUrl ?? undefined,

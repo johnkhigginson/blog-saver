@@ -7,6 +7,7 @@ import {
   upgradeBloggerImage,
   htmlToText,
   excerpt,
+  decodeEntities,
 } from "../src/lib/blogger";
 import { slugify, uniqueSlug } from "../src/lib/slug";
 
@@ -141,6 +142,17 @@ check(
   upgradeBloggerImage("https://lh3.googleusercontent.com/abc=s220") === "https://lh3.googleusercontent.com/abc=s1600",
   upgradeBloggerImage("https://lh3.googleusercontent.com/abc=s220")
 );
+check(
+  "decodeEntities named (quot/apos/amp)",
+  decodeEntities("&quot;Oh boy!&quot; &amp; mother&apos;s") === `"Oh boy!" & mother's`,
+  decodeEntities("&quot;Oh boy!&quot; &amp; mother&apos;s")
+);
+check(
+  "decodeEntities numeric (dec + hex)",
+  decodeEntities("mother&#39;s &#x2764;") === "mother's ❤",
+  decodeEntities("mother&#39;s &#x2764;")
+);
+check("decodeEntities no-op when no entity", decodeEntities("plain title") === "plain title");
 
 // ── slug ──
 console.log("Slugs:");

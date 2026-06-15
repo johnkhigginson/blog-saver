@@ -12,7 +12,7 @@
 import * as cheerio from "cheerio";
 import { safeFetch } from "@/lib/ssrf";
 import { cdxSearch, rawSnapshotUrl } from "@/lib/wayback";
-import { normalizeBlogUrl, upgradeBloggerImage, type BloggerPost } from "@/lib/blogger";
+import { normalizeBlogUrl, upgradeBloggerImage, decodeEntities, type BloggerPost } from "@/lib/blogger";
 
 const UA = "Mozilla/5.0 (compatible; BlogSaver/1.0; blog archival)";
 
@@ -75,15 +75,17 @@ function parseDateLoose(value: string | undefined | null): Date | null {
 export function scrapeBloggerPostHtml(html: string, permalink: string): BloggerPost | null {
   const $ = cheerio.load(html);
 
-  const title = (
-    $(".post-title").first().text() ||
-    $(".entry-title").first().text() ||
-    $('meta[property="og:title"]').attr("content") ||
-    $("title").text() ||
-    ""
-  )
-    .replace(/\s+/g, " ")
-    .trim();
+  const title = decodeEntities(
+    (
+      $(".post-title").first().text() ||
+      $(".entry-title").first().text() ||
+      $('meta[property="og:title"]').attr("content") ||
+      $("title").text() ||
+      ""
+    )
+      .replace(/\s+/g, " ")
+      .trim()
+  );
 
   const bodyEl = $(".post-body").first().length
     ? $(".post-body").first()
@@ -112,14 +114,15 @@ export function scrapeBloggerPostHtml(html: string, permalink: string): BloggerP
   const imgMatch = contentHtml.match(/<img[^>]+src=["']([^"']+)["']/i);
   const imageUrl = upgradeBloggerImage(imgMatch ? imgMatch[1] : null);
 
-  const author =
+  const authorRaw =
     ($(".post-author .fn").first().text() ||
       $('meta[name="author"]').attr("content") ||
       $(".author .fn").first().text() ||
       "")
       .replace(/\s+/g, " ")
       .replace(/^posted by\s*/i, "")
-      .trim() || null;
+      .trim();
+  const author = authorRaw ? decodeEntities(authorRaw) : null;
 
   return {
     title: title || "Untitled post",

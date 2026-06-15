@@ -62,11 +62,36 @@ function parseDate(value: string | null | undefined): Date | null {
   return Number.isNaN(d.getTime()) ? null : d;
 }
 
+// Decode HTML entities in plain-text fields (titles, author names). Blogger
+// feeds HTML-encode these, but we store/render them as text, so a raw value
+// would show up literally (e.g. &quot;Oh boy!&quot;). &amp; is decoded last so
+// an already-decoded string isn't double-processed.
+export function decodeEntities(input: string): string {
+  if (!input || input.indexOf("&") === -1) return input;
+  return input
+    .replace(/&#x([0-9a-f]+);/gi, (_, h) => safeCodePoint(parseInt(h, 16)))
+    .replace(/&#(\d+);/g, (_, d) => safeCodePoint(parseInt(d, 10)))
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&nbsp;/g, " ")
+    .replace(/&amp;/g, "&");
+}
+
+function safeCodePoint(n: number): string {
+  try {
+    return String.fromCodePoint(n);
+  } catch {
+    return "";
+  }
+}
+
 // ─── JSON feed (live) ───────────────────────────────────────────
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 function postFromJsonEntry(entry: any): BloggerPost {
-  const title: string = entry.title?.$t ?? "";
+  const title: string = decodeEntities(entry.title?.$t ?? "");
   const contentHtml: string = entry.content?.$t ?? entry.summary?.$t ?? "";
 
   const links: any[] = entry.link ?? [];
@@ -82,7 +107,8 @@ function postFromJsonEntry(entry: any): BloggerPost {
     upgradeBloggerImage(thumb) ?? upgradeBloggerImage(firstImageFromHtml(contentHtml));
 
   const authors: any[] = entry.author ?? [];
-  const author: string | null = authors[0]?.name?.$t ?? null;
+  const rawAuthor: string | null = authors[0]?.name?.$t ?? null;
+  const author = rawAuthor && rawAuthor.trim() ? decodeEntities(rawAuthor.trim()) : null;
 
   const sourceId: string | null = (entry.id?.$t ?? "").trim() || null;
 
@@ -94,7 +120,7 @@ function postFromJsonEntry(entry: any): BloggerPost {
     publishedAt: parseDate(entry.published?.$t),
     labels,
     imageUrl,
-    author: author && author.trim() ? author.trim() : null,
+    author,
   };
 }
 
@@ -267,7 +293,7 @@ export function parseBloggerXmlExport(xml: string): BloggerImport {
       }
     });
 
-    const authorName = entry.children("author").first().children("name").first().text().trim();
+    const authorName = decodeEntities(entry.children("author").first().children("name").first().text().trim());
     const publishedAt = parseDate(entry.children("published").first().text());
 
     if (isComment) {
@@ -286,7 +312,7 @@ export function parseBloggerXmlExport(xml: string): BloggerImport {
 
     if (!isPost || isDraft) return;
 
-    const title = entry.children("title").first().text().trim();
+    const title = decodeEntities(entry.children("title").first().text().trim());
     const contentHtml = entry.children("content").first().text();
 
     let permalink: string | null = null;
