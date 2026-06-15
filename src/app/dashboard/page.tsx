@@ -53,7 +53,7 @@ export default async function DashboardPage() {
               <LifeBuoy className="h-5 w-5 text-primary" />
               <div>
                 <p className="font-medium">Recover a deleted blog</p>
-                <p className="text-sm text-muted-foreground">Rebuild from the Wayback Machine using its old URL.</p>
+                <p className="text-sm text-muted-foreground">Rebuild from web archives (Common Crawl + Wayback) using its old URL.</p>
               </div>
             </CardContent>
           </Card>

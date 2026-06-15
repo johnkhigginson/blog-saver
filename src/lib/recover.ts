@@ -12,14 +12,18 @@
 import * as cheerio from "cheerio";
 import { safeFetch } from "@/lib/ssrf";
 import { cdxSearch, rawSnapshotUrl } from "@/lib/wayback";
+import { ccListPosts, ccFetchHtml, type CcRecord } from "@/lib/commoncrawl";
 import { normalizeBlogUrl, upgradeBloggerImage, decodeEntities, type BloggerPost } from "@/lib/blogger";
 
 const UA = "Mozilla/5.0 (compatible; BlogSaver/1.0; blog archival)";
 
+// A recoverable post located in one of the web archives. Carries the
+// source-specific coordinates needed to fetch its HTML.
 export interface ArchivedPost {
   permalink: string; // canonical https URL (hostname + path; no port/query)
-  original: string; // exact CDX original (scheme/port/query as captured) — used to build the snapshot URL
-  timestamp: string;
+  source: "commoncrawl" | "wayback";
+  cc?: CcRecord;
+  wayback?: { original: string; timestamp: string };
 }
 
 function isBloggerPostPath(u: string): boolean {
@@ -31,38 +35,64 @@ function isBloggerPostPath(u: string): boolean {
   }
 }
 
-// Every unique Blogger post the Wayback Machine has a capture for, with the
-// capture coordinates needed to fetch it.
+const listCache = new Map<string, { at: number; posts: ArchivedPost[] }>();
+const LIST_TTL_MS = 15 * 60_000;
+
+// Every unique Blogger post recoverable from the web archives, with the
+// source-specific coordinates needed to fetch each. Unions Common Crawl (usually
+// the richer source for a deleted blog) with the Wayback Machine (fills gaps).
+// Cached briefly so the recovery route re-lists cheaply across batches.
 export async function listArchivedPosts(blogUrl: string): Promise<ArchivedPost[]> {
-  const origin = normalizeBlogUrl(blogUrl);
-  const host = new URL(origin).host;
-  const rows = await cdxSearch(`${host}/`, {
-    matchType: "prefix",
-    filterStatus: "200",
-    collapse: "urlkey",
-    limit: 20000,
-  });
+  const host = new URL(normalizeBlogUrl(blogUrl)).host;
+  const cached = listCache.get(host);
+  if (cached && Date.now() - cached.at < LIST_TTL_MS) return cached.posts;
 
   const byPermalink = new Map<string, ArchivedPost>();
-  for (const r of rows) {
-    if (!isBloggerPostPath(r.originalUrl)) continue;
-    let u: URL;
-    try {
-      u = new URL(r.originalUrl);
-    } catch {
-      continue;
+
+  // Common Crawl first (typically the most complete archive of a deleted blog).
+  try {
+    for (const rec of await ccListPosts(blogUrl)) {
+      if (!byPermalink.has(rec.permalink)) {
+        byPermalink.set(rec.permalink, { permalink: rec.permalink, source: "commoncrawl", cc: rec });
+      }
     }
-    // Canonical permalink: https + hostname (drop :80) + path, no query — so
-    // http/https, :80, and ?m=0/?m=1 mobile variants collapse to one post.
-    const permalink = `https://${u.hostname}${u.pathname}`;
-    const existing = byPermalink.get(permalink);
-    const isClean = !u.search;
-    // Prefer a capture of the clean (query-less) URL when we have one.
-    if (!existing || (isClean && existing.original.includes("?"))) {
-      byPermalink.set(permalink, { permalink, original: r.originalUrl, timestamp: r.timestamp });
-    }
+  } catch {
+    /* Common Crawl unavailable — fall back to Wayback alone */
   }
-  return [...byPermalink.values()].sort((a, b) => a.permalink.localeCompare(b.permalink));
+
+  // Wayback fills any posts Common Crawl didn't have.
+  try {
+    const rows = await cdxSearch(`${host}/`, {
+      matchType: "prefix",
+      filterStatus: "200",
+      collapse: "urlkey",
+      limit: 20000,
+    });
+    for (const r of rows) {
+      if (!isBloggerPostPath(r.originalUrl)) continue;
+      try {
+        const u = new URL(r.originalUrl);
+        const permalink = `https://${u.hostname}${u.pathname}`;
+        if (!byPermalink.has(permalink)) {
+          byPermalink.set(permalink, {
+            permalink,
+            source: "wayback",
+            wayback: { original: r.originalUrl, timestamp: r.timestamp },
+          });
+        }
+      } catch {
+        /* skip unparseable */
+      }
+    }
+  } catch (e) {
+    // If Wayback is throttled/erroring but Common Crawl already gave us posts,
+    // proceed with those; only surface the error when we have nothing at all.
+    if (byPermalink.size === 0) throw e;
+  }
+
+  const posts = [...byPermalink.values()].sort((a, b) => a.permalink.localeCompare(b.permalink));
+  listCache.set(host, { at: Date.now(), posts });
+  return posts;
 }
 
 function parseDateLoose(value: string | undefined | null): Date | null {
@@ -156,7 +186,12 @@ async function fetchRawHtml(snapshotUrl: string): Promise<string | null> {
 export async function scrapeArchivedPosts(items: ArchivedPost[]): Promise<BloggerPost[]> {
   const posts: BloggerPost[] = [];
   for (const it of items) {
-    const html = await fetchRawHtml(rawSnapshotUrl(it.timestamp, it.original));
+    let html: string | null = null;
+    if (it.source === "commoncrawl" && it.cc) {
+      html = await ccFetchHtml(it.cc);
+    } else if (it.source === "wayback" && it.wayback) {
+      html = await fetchRawHtml(rawSnapshotUrl(it.wayback.timestamp, it.wayback.original));
+    }
     if (!html) continue;
     const post = scrapeBloggerPostHtml(html, it.permalink);
     if (post) posts.push(post);

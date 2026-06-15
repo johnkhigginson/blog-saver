@@ -92,9 +92,9 @@ export default function RecoverPage() {
       <div>
         <h1 className="font-display text-2xl font-semibold tracking-tight">Recover a deleted blog</h1>
         <p className="text-sm text-muted-foreground">
-          If a Blogger blog was taken down, we can often rebuild it from the Wayback Machine using
-          only its old address. Posts are scraped from archived snapshots; afterwards, run Rescue
-          images to bring the photos back too.
+          If a Blogger blog was taken down, we can often rebuild it from public web archives
+          (Common Crawl and the Wayback Machine) using only its old address. Posts are scraped from
+          archived snapshots; afterwards, run Rescue images to bring the photos back too.
         </p>
       </div>
 
