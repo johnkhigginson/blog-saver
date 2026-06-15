@@ -81,10 +81,27 @@ async function queryIndex(cdxApi: string, host: string): Promise<Record<string, 
   return [];
 }
 
+// Run async work over items with bounded concurrency.
+async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let next = 0;
+  async function worker() {
+    while (next < items.length) {
+      const i = next++;
+      results[i] = await fn(items[i]);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return results;
+}
+
 const postCache = new Map<string, { at: number; records: CcRecord[] }>();
 
 // Every unique Blogger post Common Crawl has a 200 text/html capture for, with
-// the WARC coordinates needed to fetch it. Cached briefly so the recovery route
+// the WARC coordinates needed to fetch it. Sweeps ALL monthly indexes (a deleted
+// blog can appear in any crawl from when it was online, and different crawls hold
+// different subsets — for one test blog the 2018 crawls had more posts than 2017).
+// Queried with bounded concurrency; cached per host so the recovery route
 // re-lists cheaply across batches.
 export async function ccListPosts(blogUrl: string): Promise<CcRecord[]> {
   const host = new URL(normalizeBlogUrl(blogUrl)).host;
@@ -92,18 +109,10 @@ export async function ccListPosts(blogUrl: string): Promise<CcRecord[]> {
   if (cached && Date.now() - cached.at < CACHE_TTL_MS) return cached.records;
 
   const indexes = await ccIndexes();
-  // One index per year (newest of each). Captures of a deleted blog live in the
-  // historical indexes from when it was online; this bounds the request count
-  // while still covering every year the blog could have been crawled.
-  const byYear = new Map<string, CcIndex>();
-  for (const idx of indexes) {
-    const m = idx.id.match(/MAIN-(\d{4})-/);
-    if (m && !byYear.has(m[1])) byYear.set(m[1], idx);
-  }
+  const perIndex = await mapLimit(indexes, 5, (idx) => queryIndex(idx["cdx-api"], host));
 
   const byPermalink = new Map<string, CcRecord>();
-  for (const idx of byYear.values()) {
-    const rows = await queryIndex(idx["cdx-api"], host);
+  for (const rows of perIndex) {
     for (const r of rows) {
       if (r.status !== "200") continue;
       const mime = r.mime || r["mime-detected"] || "";
