@@ -46,29 +46,6 @@ export async function generateMetadata({ params }: PageProps) {
   };
 }
 
-function articleJsonLd(data: Awaited<ReturnType<typeof getPublishedPost>>, blogSlug: string) {
-  if (!data) return null;
-  const { post } = data;
-  const image = absoluteUrl(post.heroImageUrl);
-  const url = `${getSiteUrl()}/blog/${blogSlug}/${post.slug ?? post.id}`;
-  const json: Record<string, unknown> = {
-    "@context": "https://schema.org",
-    "@type": "Article",
-    headline: post.title,
-    description: post.excerpt ?? undefined,
-    image: image ? [image] : undefined,
-    datePublished: post.publishedAt?.toISOString(),
-    author: post.author?.name
-      ? { "@type": "Person", name: post.author.name }
-      : post.originalAuthor
-        ? { "@type": "Person", name: post.originalAuthor }
-        : undefined,
-    mainEntityOfPage: url,
-    keywords: post.tags.length ? post.tags.map((t) => t.tag.name).join(", ") : undefined,
-  };
-  return JSON.stringify(json).replace(/</g, "\\u003c");
-}
-
 export default async function BlogPostPage({ params }: PageProps) {
   const { slug, postSlug } = await params;
   const data = await getPublishedPost(slug, postSlug);
@@ -95,11 +72,9 @@ export default async function BlogPostPage({ params }: PageProps) {
   }
 
   const byline = post.author?.name ?? post.originalAuthor ?? null;
-  const jsonLd = articleJsonLd(data, slug);
 
   return (
     <BlogShell homeHref={`/blog/${blog.slug}`} homeLabel={blog.title} aboutHref={`/blog/${blog.slug}/about`}>
-      {jsonLd && <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: jsonLd }} />}
       <Link
         href={`/blog/${blog.slug}`}
         className="mb-4 inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
