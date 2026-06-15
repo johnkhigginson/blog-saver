@@ -37,8 +37,15 @@ export async function listArchivedPostUrls(blogUrl: string): Promise<string[]> {
   });
   const urls = new Set<string>();
   for (const r of rows) {
-    // Normalize scheme so http/https variants of the same post collapse.
-    if (isBloggerPostPath(r.originalUrl)) urls.add(r.originalUrl.replace(/^http:\/\//i, "https://"));
+    if (!isBloggerPostPath(r.originalUrl)) continue;
+    // Canonicalize to https + path only, dropping query/fragment, so Blogger's
+    // ?m=0 / ?m=1 mobile variants (and http/https) collapse to one post.
+    try {
+      const u = new URL(r.originalUrl);
+      urls.add(`https://${u.host}${u.pathname}`);
+    } catch {
+      /* skip unparseable */
+    }
   }
   return [...urls].sort();
 }

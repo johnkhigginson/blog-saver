@@ -9,7 +9,8 @@
     "lint": "eslint",
     "db:push": "prisma db push",
     "db:generate": "prisma generate",
-    "verify": "npx tsx scripts/verify-blogger.ts"
+    "verify": "npx tsx scripts/verify-blogger.ts",
+    "verify:live": "npx tsx scripts/verify-live.ts"
   },
   "dependencies": {
     "@base-ui/react": "^1.3.0",
