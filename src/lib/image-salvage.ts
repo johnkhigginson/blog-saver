@@ -15,8 +15,13 @@ import { findArchivedImage } from "@/lib/wayback";
 const MAX_BYTES = 25 * 1024 * 1024;
 const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 
+// Remote = http(s) or protocol-relative (//host/...), as Blogger often emits.
 function isExternalHttp(url: string): boolean {
-  return /^https?:\/\//i.test(url);
+  return /^(https?:)?\/\//i.test(url);
+}
+
+function toAbsolute(url: string): string {
+  return url.startsWith("//") ? `https:${url}` : url;
 }
 
 function srcsetUrls(srcset: string): string[] {
@@ -68,20 +73,23 @@ export type SalvageOutcome =
 export async function salvageImageUrl(originalUrl: string, userId: number): Promise<SalvageOutcome> {
   if (!isExternalHttp(originalUrl)) return { error: "not an external url" };
 
+  // Normalize protocol-relative URLs so fetch + dedupe are consistent.
+  const fetchUrl = toAbsolute(originalUrl);
+
   const existing = await prisma.uploadedImage.findFirst({
-    where: { sourceUrl: originalUrl },
+    where: { sourceUrl: fetchUrl },
     select: { id: true },
     orderBy: { id: "desc" },
   });
   if (existing) return { url: `/api/images/${existing.id}`, from: "EXISTING" };
 
   // 1) Try the live URL — many images still resolve.
-  let buf = await fetchImageBytes(originalUrl);
+  let buf = await fetchImageBytes(fetchUrl);
   let from: "LIVE" | "WAYBACK" = "LIVE";
 
   // 2) Dead? Recover from the Wayback Machine.
   if (!buf) {
-    const snap = await findArchivedImage(originalUrl);
+    const snap = await findArchivedImage(fetchUrl);
     if (snap) {
       buf = await fetchImageBytes(snap.snapshotUrl);
       from = "WAYBACK";
@@ -93,7 +101,7 @@ export async function salvageImageUrl(originalUrl: string, userId: number): Prom
   try {
     const id = await storeImageBuffer(buf, {
       uploadedBy: userId,
-      sourceUrl: originalUrl,
+      sourceUrl: fetchUrl,
       recoveredFrom: from,
     });
     return { url: `/api/images/${id}`, from };

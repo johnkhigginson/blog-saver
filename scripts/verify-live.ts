@@ -4,7 +4,7 @@
 //   npx tsx scripts/verify-live.ts yourblog.blogspot.com   # also test live feed
 
 import { closestSnapshot } from "../src/lib/wayback";
-import { listArchivedPostUrls, scrapeArchivedPosts } from "../src/lib/recover";
+import { listArchivedPosts, scrapeArchivedPosts } from "../src/lib/recover";
 import { fetchAllBloggerPosts } from "../src/lib/blogger";
 
 const arg = process.argv[2];
@@ -17,8 +17,8 @@ async function main() {
   const domain = arg || "googleblog.blogspot.com";
   console.log(`\n2) CDX: archived Blogger post URLs for ${domain} ...`);
   try {
-    const urls = await listArchivedPostUrls(domain);
-    console.log(`   -> ${urls.length} post URL(s). first: ${urls[0] ?? "(none)"}`);
+    const urls = await listArchivedPosts(domain);
+    console.log(`   -> ${urls.length} post URL(s). first: ${urls[0]?.permalink ?? "(none)"}`);
     if (urls.length) {
       console.log("\n3) Scraping the first archived post ...");
       const posts = await scrapeArchivedPosts(urls.slice(0, 1));

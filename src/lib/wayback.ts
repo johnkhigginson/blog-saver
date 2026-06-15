@@ -82,38 +82,42 @@ export async function cdxSearch(urlPattern: string, opts: CdxOptions = {}): Prom
   if (opts.mimePrefix) params.append("filter", `mimetype:${opts.mimePrefix}.*`);
 
   const api = `https://web.archive.org/cdx/search/cdx?${params.toString()}`;
-  try {
-    const res = await safeFetch(
-      api,
-      { headers: { "User-Agent": UA, Accept: "application/json" }, signal: AbortSignal.timeout(45000) },
-      { maxBytes: 64 * 1024 * 1024 }
-    );
-    if (!res.ok) return [];
-    const rows = (await res.json()) as string[][];
-    if (!Array.isArray(rows) || rows.length <= 1) return [];
-    // Row 0 is the column header.
-    return rows.slice(1).map(([original, timestamp, statuscode, mimetype]) => ({
-      originalUrl: original,
-      timestamp,
-      statusCode: statuscode,
-      mimeType: mimetype,
-      snapshotUrl: rawSnapshotUrl(timestamp, original),
-    }));
-  } catch {
-    return [];
-  }
+  const res = await safeFetch(
+    api,
+    { headers: { "User-Agent": UA, Accept: "application/json" }, signal: AbortSignal.timeout(45000) },
+    { maxBytes: 64 * 1024 * 1024 }
+  );
+  // Surface failures (e.g. 429 rate-limit, 5xx) instead of masking them as an
+  // empty result — callers must be able to tell "throttled" from "nothing found".
+  if (!res.ok) throw new Error(`CDX request failed (${res.status})`);
+  const rows = (await res.json()) as string[][];
+  if (!Array.isArray(rows) || rows.length <= 1) return [];
+  // Row 0 is the column header.
+  return rows.slice(1).map(([original, timestamp, statuscode, mimetype]) => ({
+    originalUrl: original,
+    timestamp,
+    statusCode: statuscode,
+    mimeType: mimetype,
+    snapshotUrl: rawSnapshotUrl(timestamp, original),
+  }));
 }
 
-// Find the best archived capture of a single image: try the availability API,
-// then fall back to a CDX lookup constrained to successful image captures.
+// Find an archived capture of a single image via the CDX server (the
+// availability API is too flaky/scheme-sensitive to rely on). Constrained to
+// successful (200) image captures so a Wayback "image unavailable" 404
+// placeholder is never mistaken for the real image. One request per image to
+// stay gentle on archive.org's rate limits; on any error (e.g. 429) we treat
+// the image as unrecoverable rather than aborting the whole salvage pass.
 export async function findArchivedImage(originalUrl: string): Promise<WaybackSnapshot | null> {
-  const closest = await closestSnapshot(originalUrl);
-  if (closest) return closest;
-  const hits = await cdxSearch(originalUrl, {
-    matchType: "exact",
-    filterStatus: "200",
-    mimePrefix: "image/",
-    limit: 1,
-  });
-  return hits[0] ?? null;
+  try {
+    const hits = await cdxSearch(originalUrl, {
+      matchType: "exact",
+      filterStatus: "200",
+      mimePrefix: "image/",
+      limit: 1,
+    });
+    return hits[0] ?? null;
+  } catch {
+    return null;
+  }
 }

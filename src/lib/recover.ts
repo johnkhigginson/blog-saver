@@ -2,19 +2,25 @@
 // Strategy:
 //   1. Enumerate every archived page for the domain via the Wayback CDX server.
 //   2. Keep the ones whose path looks like a Blogger post permalink
-//      (/YYYY/MM/slug.html).
-//   3. Fetch each one's raw archived HTML (id_ capture) and scrape the title,
-//      body, date, labels, and author into the same BloggerPost shape the
-//      importer already understands.
+//      (/YYYY/MM/slug.html), deduped by canonical path.
+//   3. Fetch each one's raw archived HTML (id_ capture, built straight from the
+//      CDX row's timestamp + original URL — NOT the availability API, which is
+//      flaky and scheme-sensitive) and scrape it into a BloggerPost.
 // Inline images stay as their original (dead) URLs here; the image-salvage pass
 // then recovers them from the Wayback Machine too.
 
 import * as cheerio from "cheerio";
 import { safeFetch } from "@/lib/ssrf";
-import { cdxSearch, closestSnapshot } from "@/lib/wayback";
+import { cdxSearch, rawSnapshotUrl } from "@/lib/wayback";
 import { normalizeBlogUrl, upgradeBloggerImage, type BloggerPost } from "@/lib/blogger";
 
 const UA = "Mozilla/5.0 (compatible; BlogSaver/1.0; blog archival)";
+
+export interface ArchivedPost {
+  permalink: string; // canonical https URL (hostname + path; no port/query)
+  original: string; // exact CDX original (scheme/port/query as captured) — used to build the snapshot URL
+  timestamp: string;
+}
 
 function isBloggerPostPath(u: string): boolean {
   try {
@@ -25,8 +31,9 @@ function isBloggerPostPath(u: string): boolean {
   }
 }
 
-// Every unique Blogger post URL the Wayback Machine has a capture for.
-export async function listArchivedPostUrls(blogUrl: string): Promise<string[]> {
+// Every unique Blogger post the Wayback Machine has a capture for, with the
+// capture coordinates needed to fetch it.
+export async function listArchivedPosts(blogUrl: string): Promise<ArchivedPost[]> {
   const origin = normalizeBlogUrl(blogUrl);
   const host = new URL(origin).host;
   const rows = await cdxSearch(`${host}/`, {
@@ -35,19 +42,27 @@ export async function listArchivedPostUrls(blogUrl: string): Promise<string[]> {
     collapse: "urlkey",
     limit: 20000,
   });
-  const urls = new Set<string>();
+
+  const byPermalink = new Map<string, ArchivedPost>();
   for (const r of rows) {
     if (!isBloggerPostPath(r.originalUrl)) continue;
-    // Canonicalize to https + path only, dropping query/fragment, so Blogger's
-    // ?m=0 / ?m=1 mobile variants (and http/https) collapse to one post.
+    let u: URL;
     try {
-      const u = new URL(r.originalUrl);
-      urls.add(`https://${u.host}${u.pathname}`);
+      u = new URL(r.originalUrl);
     } catch {
-      /* skip unparseable */
+      continue;
+    }
+    // Canonical permalink: https + hostname (drop :80) + path, no query — so
+    // http/https, :80, and ?m=0/?m=1 mobile variants collapse to one post.
+    const permalink = `https://${u.hostname}${u.pathname}`;
+    const existing = byPermalink.get(permalink);
+    const isClean = !u.search;
+    // Prefer a capture of the clean (query-less) URL when we have one.
+    if (!existing || (isClean && existing.original.includes("?"))) {
+      byPermalink.set(permalink, { permalink, original: r.originalUrl, timestamp: r.timestamp });
     }
   }
-  return [...urls].sort();
+  return [...byPermalink.values()].sort((a, b) => a.permalink.localeCompare(b.permalink));
 }
 
 function parseDateLoose(value: string | undefined | null): Date | null {
@@ -81,7 +96,8 @@ export function scrapeBloggerPostHtml(html: string, permalink: string): BloggerP
     parseDateLoose($("time.published").attr("datetime")) ||
     parseDateLoose($('meta[property="article:published_time"]').attr("content")) ||
     parseDateLoose($("abbr.published").attr("title")) ||
-    parseDateLoose($(".date-header span").first().text());
+    parseDateLoose($(".date-header span").first().text()) ||
+    parseDateLoose($(".date-header").first().text());
   if (!published) {
     const m = permalink.match(/\/(\d{4})\/(\d{2})\//);
     if (m) published = parseDateLoose(`${m[1]}-${m[2]}-01T00:00:00Z`);
@@ -131,16 +147,15 @@ async function fetchRawHtml(snapshotUrl: string): Promise<string | null> {
   }
 }
 
-// Scrape a slice of archived post URLs into BloggerPosts (sequential to stay
-// gentle on archive.org's rate limits).
-export async function scrapeArchivedPosts(urls: string[]): Promise<BloggerPost[]> {
+// Scrape a slice of archived posts into BloggerPosts (sequential to stay gentle
+// on archive.org's rate limits). Builds the snapshot URL directly from each
+// capture's timestamp + original.
+export async function scrapeArchivedPosts(items: ArchivedPost[]): Promise<BloggerPost[]> {
   const posts: BloggerPost[] = [];
-  for (const url of urls) {
-    const snap = await closestSnapshot(url);
-    if (!snap) continue;
-    const html = await fetchRawHtml(snap.snapshotUrl);
+  for (const it of items) {
+    const html = await fetchRawHtml(rawSnapshotUrl(it.timestamp, it.original));
     if (!html) continue;
-    const post = scrapeBloggerPostHtml(html, url);
+    const post = scrapeBloggerPostHtml(html, it.permalink);
     if (post) posts.push(post);
   }
   return posts;

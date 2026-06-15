@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { requireUser, requireBlogAccess } from "@/lib/auth";
 import { normalizeBlogUrl } from "@/lib/blogger";
-import { listArchivedPostUrls, scrapeArchivedPosts } from "@/lib/recover";
+import { listArchivedPosts, scrapeArchivedPosts, type ArchivedPost } from "@/lib/recover";
 import { importBloggerData } from "@/lib/import-posts";
 import { audit } from "@/lib/audit";
 
@@ -57,9 +57,9 @@ export async function POST(request: NextRequest) {
     blogId = blog.id;
   }
 
-  let urls: string[];
+  let urls: ArchivedPost[];
   try {
-    urls = await listArchivedPostUrls(body.blogUrl);
+    urls = await listArchivedPosts(body.blogUrl);
   } catch (err) {
     const message = err instanceof Error ? err.message : "Wayback lookup failed";
     return NextResponse.json({ error: message }, { status: 502 });
