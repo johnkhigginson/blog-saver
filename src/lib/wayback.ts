@@ -138,7 +138,17 @@ export async function cdxSearch(urlPattern: string, opts: CdxOptions = {}): Prom
 // placeholder is never mistaken for the real image. A genuine lookup miss or
 // error returns null (image unrecoverable); a rate-limit throws so the caller
 // can report "throttled, retry later" rather than "gone".
+let imageThrottleCooldownUntil = 0;
+const IMAGE_THROTTLE_COOLDOWN_MS = 10 * 60_000;
+
 export async function findArchivedImage(originalUrl: string): Promise<WaybackSnapshot | null> {
+  // Circuit breaker: once Wayback rate-limits us, skip it for a cooldown window
+  // and mark images "throttled" instantly, rather than burning a multi-second
+  // backoff per image while archive.org keeps refusing. Live images still
+  // self-host; dead ones are deferred to a later run when Wayback recovers.
+  if (Date.now() < imageThrottleCooldownUntil) {
+    throw new WaybackThrottleError(429);
+  }
   try {
     const hits = await cdxSearch(originalUrl, {
       matchType: "exact",
@@ -148,7 +158,10 @@ export async function findArchivedImage(originalUrl: string): Promise<WaybackSna
     });
     return hits[0] ?? null;
   } catch (e) {
-    if (isThrottle(e)) throw e; // bubble up rate-limiting; don't mark as "gone"
+    if (isThrottle(e)) {
+      imageThrottleCooldownUntil = Date.now() + IMAGE_THROTTLE_COOLDOWN_MS;
+      throw e; // bubble up rate-limiting; don't mark as "gone"
+    }
     return null;
   }
 }
