@@ -4,6 +4,7 @@ import { requireBlogAccess } from "@/lib/auth";
 import { sanitizeBlogHtml } from "@/lib/sanitize";
 import { uniquePostSlug } from "@/lib/slug-db";
 import { setPostTags } from "@/lib/tags";
+import { syncPostImages } from "@/lib/post-images";
 import { audit } from "@/lib/audit";
 
 type RouteParams = { params: Promise<{ id: string }> };
@@ -52,10 +53,11 @@ export async function PATCH(request: NextRequest, { params }: RouteParams) {
   const updated = await prisma.post.update({
     where: { id: postId },
     data,
-    select: { id: true, slug: true, title: true },
+    select: { id: true, slug: true, title: true, heroImageUrl: true, bodyHtml: true },
   });
 
   if (Array.isArray(body.tags)) await setPostTags(postId, body.tags, true);
+  await syncPostImages(updated.id, updated.heroImageUrl, updated.bodyHtml);
 
   await audit({
     category: "POST",

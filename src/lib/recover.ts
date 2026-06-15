@@ -102,6 +102,7 @@ export function scrapeBloggerPostHtml(html: string, permalink: string): BloggerP
     title: title || "Untitled post",
     contentHtml,
     permalink,
+    sourceId: null, // recovered posts are matched by permalink (the archived URL)
     publishedAt: published,
     labels: [...labels],
     imageUrl,
@@ -111,10 +112,11 @@ export function scrapeBloggerPostHtml(html: string, permalink: string): BloggerP
 
 async function fetchRawHtml(snapshotUrl: string): Promise<string | null> {
   try {
-    const res = await safeFetch(snapshotUrl, {
-      headers: { "User-Agent": UA, Accept: "text/html" },
-      signal: AbortSignal.timeout(25000),
-    });
+    const res = await safeFetch(
+      snapshotUrl,
+      { headers: { "User-Agent": UA, Accept: "text/html" }, signal: AbortSignal.timeout(25000) },
+      { maxBytes: 15 * 1024 * 1024 }
+    );
     if (!res.ok) return null;
     return await res.text();
   } catch {

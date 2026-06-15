@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { requireBlogAccess } from "@/lib/auth";
 import { salvagePost } from "@/lib/image-salvage";
+import { syncPostImages } from "@/lib/post-images";
 import { audit } from "@/lib/audit";
 
 export const runtime = "nodejs";
@@ -44,15 +45,20 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     nextCursor = p.id;
     postsProcessed++;
     const r = await salvagePost(p, user.userId);
-    if (r.changed || r.heroFailed) {
+    if (r.changed) {
+      // imageLocalizeFailed is set explicitly (not undefined) so a hero that now
+      // succeeds clears a previously-set flag.
       await prisma.post.update({
         where: { id: p.id },
         data: {
           heroImageUrl: r.heroImageUrl,
           bodyHtml: r.bodyHtml,
-          imageLocalizeFailed: r.heroFailed ? true : undefined,
+          imageLocalizeFailed: r.heroFailed,
         },
       });
+      await syncPostImages(p.id, r.heroImageUrl, r.bodyHtml);
+    } else if (r.heroFailed) {
+      await prisma.post.update({ where: { id: p.id }, data: { imageLocalizeFailed: true } });
     }
     converted += r.converted;
     failed += r.failed;

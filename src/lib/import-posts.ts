@@ -1,12 +1,13 @@
 // Shared post-creation logic used by both the Blogger importer and the Wayback
 // recovery path. Takes a normalized BloggerImport and writes Posts/Comments/Tags
-// into an existing blog. Idempotent: a re-run updates posts in place (matched by
-// permalink, or title+date when no permalink exists).
+// into an existing blog. Idempotent: a re-run updates posts in place, matched by
+// the stable source id (Atom <id>), then permalink, then title+date.
 
 import { prisma } from "@/lib/prisma";
 import { htmlToText, excerpt, type BloggerImport } from "@/lib/blogger";
 import { uniqueSlug } from "@/lib/slug";
 import { sanitizeBlogHtml } from "@/lib/sanitize";
+import { syncPostImages } from "@/lib/post-images";
 
 export interface ImportSummary {
   imported: number;
@@ -14,6 +15,29 @@ export interface ImportSummary {
   skipped: number;
   importedComments: number;
   errors: string[];
+}
+
+// Resolve every distinct label to a tag id in a few queries (not one per label).
+async function resolveTagIds(labels: string[]): Promise<Map<string, number>> {
+  const names = [...new Set(labels.map((l) => l.trim()).filter(Boolean))].map((n) => n.slice(0, 120));
+  const map = new Map<string, number>();
+  if (names.length === 0) return map;
+
+  const existing = await prisma.tag.findMany({ where: { name: { in: names } }, select: { id: true, name: true } });
+  for (const t of existing) map.set(t.name, t.id);
+
+  const missing = names.filter((n) => !map.has(n));
+  if (missing.length) {
+    // SQL Server createMany has no skipDuplicates; tolerate a concurrent insert.
+    try {
+      await prisma.tag.createMany({ data: missing.map((name) => ({ name })) });
+    } catch {
+      /* raced; the re-read below still resolves them */
+    }
+    const created = await prisma.tag.findMany({ where: { name: { in: missing } }, select: { id: true, name: true } });
+    for (const t of created) map.set(t.name, t.id);
+  }
+  return map;
 }
 
 export async function importBloggerData(
@@ -24,38 +48,36 @@ export async function importBloggerData(
   const updateExisting = opts.updateExisting !== false; // default: refresh existing
   const sourceType = opts.sourceType ?? "BLOGGER_IMPORT";
 
-  const postKey = (name: string, permalink: string | null, published: Date | null) =>
-    permalink || `${name}|${published?.toISOString() ?? ""}`;
+  // Identity for idempotent matching. Prefer the stable Atom id, then permalink,
+  // then a title+date fallback (with an in-run index to avoid collapsing two
+  // distinct id-less, permalink-less entries during a single run).
+  const dbKey = (sourceId: string | null, permalink: string | null, name: string, published: Date | null) =>
+    sourceId || permalink || `${name}|${published?.toISOString() ?? ""}`;
 
   const existingPosts = await prisma.post.findMany({
     where: { blogId },
-    select: { id: true, title: true, slug: true, sourceUrl: true, publishedAt: true },
+    select: { id: true, title: true, slug: true, sourceId: true, sourceUrl: true, publishedAt: true },
   });
   const existingByKey = new Map<string, number>();
   const postIdByUrl = new Map<string, number>();
   for (const p of existingPosts) {
-    existingByKey.set(postKey(p.title, p.sourceUrl, p.publishedAt), p.id);
+    existingByKey.set(dbKey(p.sourceId, p.sourceUrl, p.title, p.publishedAt), p.id);
     if (p.sourceUrl) postIdByUrl.set(p.sourceUrl, p.id);
   }
   const takenSlugs = new Set(existingPosts.map((p) => p.slug).filter((s): s is string => !!s));
 
-  const tagCache = new Map<string, number>();
-  async function getTagId(name: string): Promise<number> {
-    const key = name.trim();
-    if (tagCache.has(key)) return tagCache.get(key)!;
-    const tag = await prisma.tag.upsert({ where: { name: key }, update: {}, create: { name: key } });
-    tagCache.set(key, tag.id);
-    return tag.id;
-  }
+  // Pre-resolve all tags across the whole import in one batch.
+  const tagIdByName = await resolveTagIds(data.posts.flatMap((p) => p.labels));
+
   async function applyTags(postId: number, labels: string[]) {
-    for (const label of labels) {
-      if (!label.trim()) continue;
-      const tagId = await getTagId(label);
-      await prisma.postTag.upsert({
-        where: { postId_tagId: { postId, tagId } },
-        update: {},
-        create: { postId, tagId },
-      });
+    const tagIds = [...new Set(labels.map((l) => l.trim()).filter(Boolean))]
+      .map((l) => tagIdByName.get(l.slice(0, 120)))
+      .filter((id): id is number => id != null);
+    // Clear-then-insert so a re-import refreshes tags without PK collisions
+    // (SQL Server createMany has no skipDuplicates).
+    await prisma.postTag.deleteMany({ where: { postId } });
+    if (tagIds.length) {
+      await prisma.postTag.createMany({ data: tagIds.map((tagId) => ({ postId, tagId })) });
     }
   }
 
@@ -71,9 +93,13 @@ export async function importBloggerData(
     return at - bt;
   });
 
-  for (const post of ordered) {
+  for (let idx = 0; idx < ordered.length; idx++) {
+    const post = ordered[idx];
     const title = (post.title || "Untitled post").slice(0, 500);
-    const key = postKey(title, post.permalink, post.publishedAt);
+    const key =
+      post.sourceId ||
+      post.permalink ||
+      `${title}|${post.publishedAt?.toISOString() ?? ""}|${idx}`;
     const existingId = existingByKey.get(key);
 
     try {
@@ -97,6 +123,7 @@ export async function importBloggerData(
           },
         });
         await applyTags(existingId, post.labels);
+        await syncPostImages(existingId, post.imageUrl, safeHtml);
         updated++;
         continue;
       }
@@ -113,6 +140,7 @@ export async function importBloggerData(
           status: "PUBLISHED",
           sourceType,
           sourceUrl: post.permalink ?? null,
+          sourceId: post.sourceId ?? null,
           originalAuthor: post.author ?? null,
           publishedAt: post.publishedAt ?? null,
         },
@@ -121,6 +149,7 @@ export async function importBloggerData(
       existingByKey.set(key, created.id);
       if (post.permalink) postIdByUrl.set(post.permalink, created.id);
       await applyTags(created.id, post.labels);
+      await syncPostImages(created.id, post.imageUrl, safeHtml);
       imported++;
     } catch (err) {
       errors.push(`${post.title}: ${err instanceof Error ? err.message : "import failed"}`);

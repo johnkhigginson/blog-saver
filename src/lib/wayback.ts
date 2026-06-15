@@ -39,10 +39,11 @@ export async function closestSnapshot(
   if (timestamp) params.set("timestamp", timestamp);
   const api = `https://archive.org/wayback/available?${params.toString()}`;
   try {
-    const res = await safeFetch(api, {
-      headers: { "User-Agent": UA, Accept: "application/json" },
-      signal: AbortSignal.timeout(15000),
-    });
+    const res = await safeFetch(
+      api,
+      { headers: { "User-Agent": UA, Accept: "application/json" }, signal: AbortSignal.timeout(15000) },
+      { maxBytes: 8 * 1024 * 1024 }
+    );
     if (!res.ok) return null;
     const json = await res.json();
     const closest = json?.archived_snapshots?.closest;
@@ -82,10 +83,11 @@ export async function cdxSearch(urlPattern: string, opts: CdxOptions = {}): Prom
 
   const api = `https://web.archive.org/cdx/search/cdx?${params.toString()}`;
   try {
-    const res = await safeFetch(api, {
-      headers: { "User-Agent": UA, Accept: "application/json" },
-      signal: AbortSignal.timeout(45000),
-    });
+    const res = await safeFetch(
+      api,
+      { headers: { "User-Agent": UA, Accept: "application/json" }, signal: AbortSignal.timeout(45000) },
+      { maxBytes: 64 * 1024 * 1024 }
+    );
     if (!res.ok) return [];
     const rows = (await res.json()) as string[][];
     if (!Array.isArray(rows) || rows.length <= 1) return [];

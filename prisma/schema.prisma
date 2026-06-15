@@ -82,19 +82,37 @@ model Post {
   status              String    @default("DRAFT") @db.NVarChar(20) // DRAFT, PUBLISHED
   sourceType          String    @default("MANUAL") @db.NVarChar(30) // MANUAL, BLOGGER_IMPORT, WAYBACK
   sourceUrl           String?   @db.NVarChar(2000) // original permalink
+  sourceId            String?   @db.NVarChar(400) // stable source identity (Atom <id>) for idempotent re-import
   originalAuthor      String?   @db.NVarChar(200) // original "Posted by" name from the source blog
   publishedAt         DateTime? // original (or chosen) publish date; drives ordering
   imageLocalizeFailed Boolean   @default(false) // self-hosting this post's hero failed; don't retry
   createdAt           DateTime  @default(now())
   updatedAt           DateTime  @updatedAt
 
-  blog     Blog      @relation(fields: [blogId], references: [id], onDelete: Cascade)
-  author   User?     @relation("PostAuthor", fields: [authorId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  blog     Blog        @relation(fields: [blogId], references: [id], onDelete: Cascade)
+  author   User?       @relation("PostAuthor", fields: [authorId], references: [id], onDelete: NoAction, onUpdate: NoAction)
   tags     PostTag[]
   comments Comment[]
+  images   PostImage[]
 
   @@index([blogId, slug])
   @@index([blogId, status, publishedAt])
+  @@index([blogId, sourceId])
+}
+
+// Which locally-stored images (UploadedImage ids) a post references (hero +
+// inline body). Populated whenever a post's content is written. Lets the image
+// serve route resolve visibility with an indexed lookup on imageId instead of a
+// LIKE scan of every post body, and anchors public access to the referencing
+// post (not to an arbitrary attacker-supplied reference).
+model PostImage {
+  postId  Int
+  imageId Int
+
+  post Post @relation(fields: [postId], references: [id], onDelete: Cascade)
+
+  @@id([postId, imageId])
+  @@index([imageId])
 }
 
 // ─── Comments ───────────────────────────────────────────────────

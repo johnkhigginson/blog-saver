@@ -29,6 +29,7 @@ const jsonFeed = {
     entry: [
       {
         published: { $t: "2019-03-04T10:00:00.000-08:00" },
+        id: { $t: "tag:blogger.com,1999:blog-9.post-100" },
         title: { $t: "A Week in Lisbon" },
         content: {
           $t: `<div><img src="https://1.bp.blogspot.com/-x/AAA/s72-c/lisbon.jpg"/><p>What a city.</p></div>`,
@@ -71,6 +72,8 @@ check(
 check("post 2 image = null (no img)", j.posts[1].imageUrl === null, j.posts[1].imageUrl);
 check("json author parsed", j.posts[0].author === "Jane", j.posts[0].author);
 check("json missing author = null", j.posts[1].author === null, j.posts[1].author);
+check("json sourceId parsed", j.posts[0].sourceId === "tag:blogger.com,1999:blog-9.post-100", j.posts[0].sourceId);
+check("json missing id = null", j.posts[1].sourceId === null, j.posts[1].sourceId);
 
 // ── XML export fixture (Atom) ──
 console.log("XML export:");
@@ -80,6 +83,7 @@ const xml = `<?xml version="1.0"?>
   <entry>
     <category scheme="http://schemas.google.com/g/2005#kind" term="http://schemas.google.com/blogger/2008/kind#post"/>
     <category scheme="http://www.blogger.com/atom/ns#" term="Travel"/>
+    <id>tag:blogger.com,1999:blog-9.post-200</id>
     <title type="text">Roaming Rome</title>
     <content type="html">&lt;p&gt;&lt;img src="https://2.bp.blogspot.com/-y/BBB/s400/rome.jpg"/&gt;Ciao.&lt;/p&gt;</content>
     <published>2018-05-05T09:00:00.000-07:00</published>
@@ -120,6 +124,7 @@ check(
 check("xml title", x.posts[0]?.title === "Roaming Rome", x.posts[0]?.title);
 check("xml image upgraded", x.posts[0]?.imageUrl === "https://2.bp.blogspot.com/-y/BBB/s1600/rome.jpg", x.posts[0]?.imageUrl);
 check("xml author parsed", x.posts[0]?.author === "Jane", x.posts[0]?.author);
+check("xml sourceId parsed", x.posts[0]?.sourceId === "tag:blogger.com,1999:blog-9.post-200", x.posts[0]?.sourceId);
 
 // ── helpers ──
 console.log("Helpers:");

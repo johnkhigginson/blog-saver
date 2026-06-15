@@ -4,6 +4,7 @@ import { requireBlogAccess } from "@/lib/auth";
 import { sanitizeBlogHtml } from "@/lib/sanitize";
 import { uniquePostSlug } from "@/lib/slug-db";
 import { setPostTags } from "@/lib/tags";
+import { syncPostImages } from "@/lib/post-images";
 import { htmlToText, excerpt } from "@/lib/blogger";
 import { audit } from "@/lib/audit";
 
@@ -54,6 +55,7 @@ export async function POST(request: NextRequest) {
   });
 
   if (Array.isArray(body.tags)) await setPostTags(post.id, body.tags, false);
+  await syncPostImages(post.id, body.heroImageUrl ?? null, bodyHtml);
 
   await audit({
     category: "POST",

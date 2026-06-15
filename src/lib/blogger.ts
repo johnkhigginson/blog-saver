@@ -9,12 +9,13 @@
 // Both normalize to the same `BloggerPost` shape.
 
 import * as cheerio from "cheerio";
-import { safeFetch } from "@/lib/ssrf";
+import { safeFetch, type SafeFetchOptions } from "@/lib/ssrf";
 
 export interface BloggerPost {
   title: string;
   contentHtml: string;
   permalink: string | null;
+  sourceId: string | null; // stable Atom <id> (tag:blogger.com,...post-N) for idempotent re-import
   publishedAt: Date | null;
   labels: string[];
   imageUrl: string | null;
@@ -83,10 +84,13 @@ function postFromJsonEntry(entry: any): BloggerPost {
   const authors: any[] = entry.author ?? [];
   const author: string | null = authors[0]?.name?.$t ?? null;
 
+  const sourceId: string | null = (entry.id?.$t ?? "").trim() || null;
+
   return {
     title,
     contentHtml,
     permalink: alternate?.href ?? null,
+    sourceId,
     publishedAt: parseDate(entry.published?.$t),
     labels,
     imageUrl,
@@ -116,7 +120,11 @@ export function normalizeBlogUrl(input: string): string {
 }
 
 // Defaults to the SSRF-guarded fetch; tests can inject a mock.
-type FetchImpl = (url: string, init?: RequestInit) => Promise<Response>;
+type FetchImpl = (url: string, init?: RequestInit, opts?: SafeFetchOptions) => Promise<Response>;
+
+// Cap on a single feed page response (150 entries is a few MB; this guards
+// against a malicious host returning a giant body).
+const FEED_MAX_BYTES = 64 * 1024 * 1024;
 
 /**
  * Paginate the Blogger JSON feed to pull every published post. The feed caps
@@ -136,10 +144,11 @@ export async function fetchAllBloggerPosts(
   // Hard cap on iterations as a safety net against unexpected pagination loops.
   for (let i = 0; i < 500; i++) {
     const feedUrl = `${origin}/feeds/posts/default?alt=json&max-results=${pageSize}&start-index=${startIndex}`;
-    const res = await fetchImpl(feedUrl, {
-      headers: { Accept: "application/json" },
-      signal: AbortSignal.timeout(20000),
-    });
+    const res = await fetchImpl(
+      feedUrl,
+      { headers: { Accept: "application/json" }, signal: AbortSignal.timeout(20000) },
+      { maxBytes: FEED_MAX_BYTES }
+    );
     if (!res.ok) {
       throw new Error(`Blogger feed request failed (${res.status}) for ${origin}`);
     }
@@ -200,10 +209,11 @@ export async function fetchAllBloggerComments(
 
   for (let i = 0; i < 500; i++) {
     const feedUrl = `${origin}/feeds/comments/default?alt=json&max-results=${pageSize}&start-index=${startIndex}`;
-    const res = await fetchImpl(feedUrl, {
-      headers: { Accept: "application/json" },
-      signal: AbortSignal.timeout(20000),
-    });
+    const res = await fetchImpl(
+      feedUrl,
+      { headers: { Accept: "application/json" }, signal: AbortSignal.timeout(20000) },
+      { maxBytes: FEED_MAX_BYTES }
+    );
     if (!res.ok) break; // comments are optional; stop quietly
     const json = await res.json();
     const { comments: page, total: reported } = parseBloggerJsonComments(json);
@@ -285,8 +295,9 @@ export function parseBloggerXmlExport(xml: string): BloggerImport {
     });
 
     const imageUrl = upgradeBloggerImage(firstImageFromHtml(contentHtml));
+    const sourceId = entry.children("id").first().text().trim() || null;
 
-    posts.push({ title, contentHtml, permalink, publishedAt, labels, imageUrl, author: authorName || null });
+    posts.push({ title, contentHtml, permalink, sourceId, publishedAt, labels, imageUrl, author: authorName || null });
   });
 
   return { blogTitle, posts, comments };

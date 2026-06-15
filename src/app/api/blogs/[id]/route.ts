@@ -21,11 +21,24 @@ export async function PATCH(request: NextRequest, { params }: RouteParams) {
 
   const current = await prisma.blog.findUnique({
     where: { id: blogId },
-    select: { title: true, slug: true, isPublished: true, publishedAt: true },
+    select: { ownerId: true, title: true, slug: true, isPublished: true, publishedAt: true },
   });
   if (!current) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
   const body = await request.json().catch(() => ({}));
+
+  // Blog-level visibility and the public URL are owner/admin only — a
+  // collaborator can edit content but cannot publish/unpublish or rename the
+  // public address (mirrors the owner-only DELETE below).
+  const wantsVisibilityChange =
+    typeof body.isPublished === "boolean" || (typeof body.slug === "string" && body.slug.trim());
+  if (wantsVisibilityChange && !user.isAdmin && current.ownerId !== user.userId) {
+    return NextResponse.json(
+      { error: "Only the blog owner can publish or change its public address." },
+      { status: 403 }
+    );
+  }
+
   const data: Record<string, unknown> = {};
 
   if (typeof body.title === "string" && body.title.trim()) data.title = body.title.trim().slice(0, 300);

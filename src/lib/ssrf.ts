@@ -47,11 +47,17 @@ async function assertPublicHost(hostname: string): Promise<void> {
   }
 }
 
+export interface SafeFetchOptions {
+  maxRedirects?: number;
+  maxBytes?: number; // hard cap on the final response body; guards against memory-exhaustion DoS
+}
+
 export async function safeFetch(
   rawUrl: string,
   init: RequestInit = {},
-  maxRedirects = 3
+  opts: SafeFetchOptions = {}
 ): Promise<Response> {
+  const maxRedirects = opts.maxRedirects ?? 3;
   let current = rawUrl;
   for (let i = 0; i <= maxRedirects; i++) {
     let u: URL;
@@ -67,8 +73,41 @@ export async function safeFetch(
 
     const res = await fetch(current, { ...init, redirect: "manual" });
     const location = res.status >= 300 && res.status < 400 ? res.headers.get("location") : null;
-    if (!location) return res;
+    if (!location) return opts.maxBytes != null ? await capBody(res, opts.maxBytes) : res;
     current = new URL(location, current).toString();
   }
   throw new Error("Too many redirects");
+}
+
+// Enforce a byte cap on a response body without buffering an unbounded amount:
+// reject early on a too-large Content-Length, then stream and abort if exceeded.
+// Returns a fresh Response (preserving headers) so callers can still use
+// .json()/.text()/.arrayBuffer().
+async function capBody(res: Response, maxBytes: number): Promise<Response> {
+  const cl = res.headers.get("content-length");
+  if (cl && Number(cl) > maxBytes) {
+    throw new Error("Response exceeds size limit");
+  }
+  if (!res.body) return res;
+
+  const reader = res.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > maxBytes) {
+      await reader.cancel();
+      throw new Error("Response exceeds size limit");
+    }
+    chunks.push(value);
+  }
+  const buf = new Uint8Array(total);
+  let offset = 0;
+  for (const c of chunks) {
+    buf.set(c, offset);
+    offset += c.byteLength;
+  }
+  return new Response(buf, { status: res.status, statusText: res.statusText, headers: res.headers });
 }
