@@ -17,7 +17,7 @@ async function main() {
   const domain = arg || "googleblog.blogspot.com";
   console.log(`\n2) CDX: archived Blogger post URLs for ${domain} ...`);
   try {
-    const urls = await listArchivedPosts(domain);
+    const { posts: urls } = await listArchivedPosts(domain);
     console.log(`   -> ${urls.length} post URL(s). first: ${urls[0]?.permalink ?? "(none)"}`);
     if (urls.length) {
       console.log("\n3) Scraping the first archived post ...");

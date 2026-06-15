@@ -58,10 +58,13 @@ export async function POST(request: NextRequest) {
   }
 
   let urls: ArchivedPost[];
+  let warnings: string[] = [];
   try {
-    urls = await listArchivedPosts(body.blogUrl);
+    const listing = await listArchivedPosts(body.blogUrl);
+    urls = listing.posts;
+    warnings = listing.warnings;
   } catch (err) {
-    const message = err instanceof Error ? err.message : "Wayback lookup failed";
+    const message = err instanceof Error ? err.message : "Archive lookup failed";
     return NextResponse.json({ error: message }, { status: 502 });
   }
 
@@ -75,7 +78,11 @@ export async function POST(request: NextRequest) {
       done: true,
       imported: 0,
       updated: 0,
-      message: "No archived posts found for that URL. Try the blog's exact old address.",
+      warnings,
+      message:
+        warnings.length > 0
+          ? warnings.join(" ")
+          : "No archived posts found for that URL. Try the blog's exact old address.",
     });
   }
 
@@ -112,6 +119,7 @@ export async function POST(request: NextRequest) {
     batchScraped: posts.length,
     imported: summary.imported,
     updated: summary.updated,
+    warnings,
     errors: summary.errors.slice(0, 15),
   });
 }

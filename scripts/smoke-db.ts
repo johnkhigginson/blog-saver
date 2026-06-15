@@ -88,7 +88,7 @@ async function main() {
 
   if (deletedUrl) {
     console.log(`\n4) Recovery from Wayback: ${deletedUrl} ...`);
-    const urls = await listArchivedPosts(deletedUrl);
+    const { posts: urls } = await listArchivedPosts(deletedUrl);
     console.log(`   -> ${urls.length} archived post URLs found`);
     if (urls.length) {
       const scraped = await scrapeArchivedPosts(urls.slice(0, RECOVER_LIMIT));

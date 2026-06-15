@@ -11,7 +11,7 @@
 
 import * as cheerio from "cheerio";
 import { safeFetch } from "@/lib/ssrf";
-import { cdxSearch, rawSnapshotUrl } from "@/lib/wayback";
+import { cdxSearch, rawSnapshotUrl, isThrottle } from "@/lib/wayback";
 import { ccListPosts, ccFetchHtml, type CcRecord } from "@/lib/commoncrawl";
 import { normalizeBlogUrl, upgradeBloggerImage, decodeEntities, type BloggerPost } from "@/lib/blogger";
 
@@ -35,19 +35,27 @@ function isBloggerPostPath(u: string): boolean {
   }
 }
 
-const listCache = new Map<string, { at: number; posts: ArchivedPost[] }>();
+export interface ArchiveListing {
+  posts: ArchivedPost[];
+  warnings: string[]; // e.g. an archive was unreachable, so the list may be incomplete
+}
+
+const listCache = new Map<string, { at: number; listing: ArchiveListing }>();
 const LIST_TTL_MS = 15 * 60_000;
 
 // Every unique Blogger post recoverable from the web archives, with the
 // source-specific coordinates needed to fetch each. Unions Common Crawl (usually
 // the richer source for a deleted blog) with the Wayback Machine (fills gaps).
-// Cached briefly so the recovery route re-lists cheaply across batches.
-export async function listArchivedPosts(blogUrl: string): Promise<ArchivedPost[]> {
+// `warnings` flags when a source was unavailable, so a partial result is never
+// silently presented as complete. Cached briefly so the recovery route re-lists
+// cheaply across batches.
+export async function listArchivedPosts(blogUrl: string): Promise<ArchiveListing> {
   const host = new URL(normalizeBlogUrl(blogUrl)).host;
   const cached = listCache.get(host);
-  if (cached && Date.now() - cached.at < LIST_TTL_MS) return cached.posts;
+  if (cached && Date.now() - cached.at < LIST_TTL_MS) return cached.listing;
 
   const byPermalink = new Map<string, ArchivedPost>();
+  const warnings: string[] = [];
 
   // Common Crawl first (typically the most complete archive of a deleted blog).
   try {
@@ -57,7 +65,9 @@ export async function listArchivedPosts(blogUrl: string): Promise<ArchivedPost[]
       }
     }
   } catch {
-    /* Common Crawl unavailable — fall back to Wayback alone */
+    warnings.push(
+      "Common Crawl was unreachable (its index server is intermittently down). Re-run recovery later to pull in the posts it has."
+    );
   }
 
   // Wayback fills any posts Common Crawl didn't have.
@@ -85,14 +95,20 @@ export async function listArchivedPosts(blogUrl: string): Promise<ArchivedPost[]
       }
     }
   } catch (e) {
-    // If Wayback is throttled/erroring but Common Crawl already gave us posts,
-    // proceed with those; only surface the error when we have nothing at all.
+    // If both sources failed, surface the error; otherwise proceed with what we
+    // have and warn that the list may be incomplete.
     if (byPermalink.size === 0) throw e;
+    warnings.push(
+      isThrottle(e)
+        ? "The Wayback Machine was rate-limiting requests. Re-run later for any posts only it has."
+        : "The Wayback Machine could not be reached. Re-run later for any posts only it has."
+    );
   }
 
   const posts = [...byPermalink.values()].sort((a, b) => a.permalink.localeCompare(b.permalink));
-  listCache.set(host, { at: Date.now(), posts });
-  return posts;
+  const listing: ArchiveListing = { posts, warnings };
+  listCache.set(host, { at: Date.now(), listing });
+  return listing;
 }
 
 function parseDateLoose(value: string | undefined | null): Date | null {
