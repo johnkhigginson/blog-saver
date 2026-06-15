@@ -68,6 +68,43 @@ export interface CdxOptions {
   collapse?: string; // e.g. "urlkey" to dedupe by URL
 }
 
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+// Thrown when the CDX server rate-limits us (403/429/503) even after retries —
+// distinct from "nothing archived" so callers can tell the user to retry later
+// instead of silently reporting images as permanently gone.
+export class WaybackThrottleError extends Error {
+  readonly throttled = true;
+  constructor(status: number) {
+    super(`The Wayback Machine is rate-limiting requests (HTTP ${status}).`);
+    this.name = "WaybackThrottleError";
+  }
+}
+
+export function isThrottle(e: unknown): boolean {
+  return !!e && typeof e === "object" && (e as { throttled?: boolean }).throttled === true;
+}
+
+// CDX fetch with backoff on rate-limit / transient statuses (archive.org throttles
+// aggressively). Non-retriable failures throw immediately; persistent throttling
+// throws WaybackThrottleError.
+async function cdxFetch(api: string): Promise<Response> {
+  const RETRIABLE = new Set([403, 429, 503]);
+  let lastStatus = 0;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const res = await safeFetch(
+      api,
+      { headers: { "User-Agent": UA, Accept: "application/json" }, signal: AbortSignal.timeout(45000) },
+      { maxBytes: 64 * 1024 * 1024 }
+    );
+    if (res.ok) return res;
+    lastStatus = res.status;
+    if (!RETRIABLE.has(res.status)) throw new Error(`CDX request failed (${res.status})`);
+    if (attempt < 2) await sleep(2500 * (attempt + 1));
+  }
+  throw new WaybackThrottleError(lastStatus);
+}
+
 // Query the CDX server. Returns one row per capture (deduped/filtered per opts).
 export async function cdxSearch(urlPattern: string, opts: CdxOptions = {}): Promise<WaybackSnapshot[]> {
   const params = new URLSearchParams({
@@ -82,14 +119,7 @@ export async function cdxSearch(urlPattern: string, opts: CdxOptions = {}): Prom
   if (opts.mimePrefix) params.append("filter", `mimetype:${opts.mimePrefix}.*`);
 
   const api = `https://web.archive.org/cdx/search/cdx?${params.toString()}`;
-  const res = await safeFetch(
-    api,
-    { headers: { "User-Agent": UA, Accept: "application/json" }, signal: AbortSignal.timeout(45000) },
-    { maxBytes: 64 * 1024 * 1024 }
-  );
-  // Surface failures (e.g. 429 rate-limit, 5xx) instead of masking them as an
-  // empty result — callers must be able to tell "throttled" from "nothing found".
-  if (!res.ok) throw new Error(`CDX request failed (${res.status})`);
+  const res = await cdxFetch(api);
   const rows = (await res.json()) as string[][];
   if (!Array.isArray(rows) || rows.length <= 1) return [];
   // Row 0 is the column header.
@@ -105,9 +135,9 @@ export async function cdxSearch(urlPattern: string, opts: CdxOptions = {}): Prom
 // Find an archived capture of a single image via the CDX server (the
 // availability API is too flaky/scheme-sensitive to rely on). Constrained to
 // successful (200) image captures so a Wayback "image unavailable" 404
-// placeholder is never mistaken for the real image. One request per image to
-// stay gentle on archive.org's rate limits; on any error (e.g. 429) we treat
-// the image as unrecoverable rather than aborting the whole salvage pass.
+// placeholder is never mistaken for the real image. A genuine lookup miss or
+// error returns null (image unrecoverable); a rate-limit throws so the caller
+// can report "throttled, retry later" rather than "gone".
 export async function findArchivedImage(originalUrl: string): Promise<WaybackSnapshot | null> {
   try {
     const hits = await cdxSearch(originalUrl, {
@@ -117,7 +147,8 @@ export async function findArchivedImage(originalUrl: string): Promise<WaybackSna
       limit: 1,
     });
     return hits[0] ?? null;
-  } catch {
+  } catch (e) {
+    if (isThrottle(e)) throw e; // bubble up rate-limiting; don't mark as "gone"
     return null;
   }
 }

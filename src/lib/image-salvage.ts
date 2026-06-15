@@ -10,7 +10,7 @@ import * as cheerio from "cheerio";
 import { prisma } from "@/lib/prisma";
 import { safeFetch } from "@/lib/ssrf";
 import { storeImageBuffer } from "@/lib/image-store";
-import { findArchivedImage } from "@/lib/wayback";
+import { findArchivedImage, isThrottle } from "@/lib/wayback";
 
 const MAX_BYTES = 25 * 1024 * 1024;
 const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
@@ -66,7 +66,8 @@ async function fetchImageBytes(url: string): Promise<Buffer | null> {
 
 export type SalvageOutcome =
   | { url: string; from: "EXISTING" | "LIVE" | "WAYBACK" }
-  | { error: string };
+  | { error: string }
+  | { throttled: true };
 
 // Localize a single image URL. Idempotent via the UploadedImage.sourceUrl index:
 // a URL salvaged once is reused, never re-downloaded.
@@ -89,7 +90,15 @@ export async function salvageImageUrl(originalUrl: string, userId: number): Prom
 
   // 2) Dead? Recover from the Wayback Machine.
   if (!buf) {
-    const snap = await findArchivedImage(fetchUrl);
+    let snap;
+    try {
+      snap = await findArchivedImage(fetchUrl);
+    } catch (e) {
+      // Rate-limited by archive.org — report distinctly so the image isn't
+      // wrongly recorded as permanently gone.
+      if (isThrottle(e)) return { throttled: true };
+      snap = null;
+    }
     if (snap) {
       buf = await fetchImageBytes(snap.snapshotUrl);
       from = "WAYBACK";
@@ -116,6 +125,7 @@ export interface PostSalvageResult {
   changed: boolean;
   converted: number;
   failed: number;
+  throttled: number; // images we couldn't check because Wayback rate-limited us
   heroFailed: boolean;
   errors: string[];
 }
@@ -140,11 +150,20 @@ export async function salvagePost(
 
   let converted = 0;
   let failed = 0;
+  let throttled = 0;
   const errors: string[] = [];
+  const throttledUrls = new Set<string>();
   const map = new Map<string, string>(); // original URL -> local /api/images/<id>
 
   for (const original of urls) {
     const outcome = await salvageImageUrl(original, userId);
+    if ("throttled" in outcome) {
+      // Couldn't check (rate-limited) — leave the URL untouched so a later run
+      // can try again; don't count it as a permanent failure.
+      throttled++;
+      throttledUrls.add(original);
+      continue;
+    }
     if ("error" in outcome) {
       failed++;
       errors.push(`${original}: ${outcome.error}`);
@@ -181,7 +200,8 @@ export async function salvagePost(
     if (local) {
       heroImageUrl = local;
       heroChanged = true;
-    } else {
+    } else if (!throttledUrls.has(heroImageUrl)) {
+      // Genuine failure (gone), not a retriable throttle.
       heroFailed = true;
     }
   }
@@ -192,6 +212,7 @@ export async function salvagePost(
     changed: bodyChanged || heroChanged,
     converted,
     failed,
+    throttled,
     heroFailed,
     errors,
   };

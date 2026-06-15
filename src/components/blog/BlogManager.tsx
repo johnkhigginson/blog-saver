@@ -100,6 +100,13 @@ export function BlogManager({ blog, canDelete }: { blog: ManagedBlog; canDelete:
     let cursor = 0;
     let converted = 0;
     let failed = 0;
+    let throttled = 0;
+    const summarize = (done: boolean) => {
+      const parts = [`recovered ${converted} image(s)`];
+      if (failed) parts.push(`${failed} not recoverable`);
+      if (throttled) parts.push(`${throttled} couldn't be checked (Wayback rate-limited — try again in a few minutes)`);
+      return `${done ? "Done. " : ""}${parts.join("; ")}${done ? "." : "…"}`;
+    };
     try {
       for (let i = 0; i < 5000; i++) {
         const res = await fetch(`/api/blogs/${blog.id}/salvage-images`, {
@@ -114,10 +121,11 @@ export function BlogManager({ blog, canDelete }: { blog: ManagedBlog; canDelete:
         }
         converted += d.converted;
         failed += d.failed;
+        throttled += d.throttled || 0;
         cursor = d.nextCursor;
-        setSalvageMsg(`Recovered ${converted} image(s)${failed ? `, ${failed} unrecoverable` : ""}…`);
+        setSalvageMsg(summarize(false));
         if (d.done) {
-          setSalvageMsg(`Done. Recovered ${converted} image(s)${failed ? `, ${failed} could not be recovered` : ""}.`);
+          setSalvageMsg(summarize(true));
           router.refresh();
           break;
         }

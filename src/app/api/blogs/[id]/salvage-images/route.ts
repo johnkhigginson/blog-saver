@@ -37,6 +37,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 
   let converted = 0;
   let failed = 0;
+  let throttled = 0;
   let postsProcessed = 0;
   let nextCursor = cursor;
   const errors: string[] = [];
@@ -62,6 +63,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     }
     converted += r.converted;
     failed += r.failed;
+    throttled += r.throttled;
     if (r.errors.length) errors.push(...r.errors);
   }
 
@@ -83,6 +85,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     postsProcessed,
     converted,
     failed,
+    throttled,
     done,
     errors: errors.slice(0, 15),
   });
