@@ -1,0 +1,198 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "sqlserver"
+}
+
+// ─── Users ──────────────────────────────────────────────────────
+
+model User {
+  id           Int       @id @default(autoincrement())
+  email        String    @unique @db.NVarChar(320)
+  name         String    @db.NVarChar(200)
+  passwordHash String    @db.NVarChar(200)
+  systemRole   String    @default("USER") @db.NVarChar(20) // USER, ADMIN
+  bio          String?   @db.NVarChar(Max) // public author bio shown on the blog
+  avatarUrl    String?   @db.NVarChar(2000) // public author photo
+  createdAt    DateTime  @default(now())
+  lastLogin    DateTime?
+
+  ownedBlogs    Blog[]            @relation("BlogOwner")
+  authoredPosts Post[]            @relation("PostAuthor")
+  collaborations BlogCollaborator[]
+  comments      Comment[]
+}
+
+// ─── Blogs ──────────────────────────────────────────────────────
+
+// A blog is the top-level container and the ownership boundary. It maps to one
+// imported/recovered source blog, or a fresh blog started here. When
+// `isPublished` is true it is viewable publicly at /blog/[slug] without login.
+model Blog {
+  id            Int       @id @default(autoincrement())
+  ownerId       Int
+  title         String    @db.NVarChar(300)
+  slug          String?   @db.NVarChar(350) // public URL segment; app-enforced unique when published
+  description   String?   @db.NVarChar(Max)
+  coverImageUrl String?   @db.NVarChar(2000)
+  sourceUrl     String?   @db.NVarChar(2000) // original blog URL (Blogger/blogspot/etc.)
+  isPublished   Boolean   @default(false)
+  publishedAt   DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  owner         User               @relation("BlogOwner", fields: [ownerId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  posts         Post[]
+  collaborators BlogCollaborator[]
+  importJobs    ImportJob[]
+
+  @@index([slug])
+  @@index([ownerId])
+}
+
+// Lets a user help maintain a blog they don't own (co-authoring), without
+// transferring ownership.
+model BlogCollaborator {
+  id        Int      @id @default(autoincrement())
+  blogId    Int
+  userId    Int
+  createdAt DateTime @default(now())
+
+  blog Blog @relation(fields: [blogId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@unique([blogId, userId])
+  @@index([userId])
+}
+
+// ─── Posts ──────────────────────────────────────────────────────
+
+model Post {
+  id                  Int       @id @default(autoincrement())
+  blogId              Int
+  authorId            Int? // the User credited as author; null for unattributed imports
+  title               String    @db.NVarChar(500)
+  slug                String?   @db.NVarChar(550) // url-friendly identifier; app-enforced unique within a blog
+  excerpt             String?   @db.NVarChar(Max) // short summary for index/listing/SEO
+  bodyHtml            String    @db.NVarChar(Max) // the post content (sanitized HTML) — primary field
+  heroImageUrl        String?   @db.NVarChar(2000)
+  status              String    @default("DRAFT") @db.NVarChar(20) // DRAFT, PUBLISHED
+  sourceType          String    @default("MANUAL") @db.NVarChar(30) // MANUAL, BLOGGER_IMPORT, WAYBACK
+  sourceUrl           String?   @db.NVarChar(2000) // original permalink
+  originalAuthor      String?   @db.NVarChar(200) // original "Posted by" name from the source blog
+  publishedAt         DateTime? // original (or chosen) publish date; drives ordering
+  imageLocalizeFailed Boolean   @default(false) // self-hosting this post's hero failed; don't retry
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  blog     Blog      @relation(fields: [blogId], references: [id], onDelete: Cascade)
+  author   User?     @relation("PostAuthor", fields: [authorId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  tags     PostTag[]
+  comments Comment[]
+
+  @@index([blogId, slug])
+  @@index([blogId, status, publishedAt])
+}
+
+// ─── Comments ───────────────────────────────────────────────────
+
+// Public comments on a published post. Signed-in members post live comments;
+// imported source-blog comments are stored with userId = null.
+model Comment {
+  id         Int      @id @default(autoincrement())
+  postId     Int
+  userId     Int? // the signed-in commenter; null for imported comments
+  authorName String   @db.NVarChar(200)
+  body       String   @db.NVarChar(Max)
+  sourceUrl  String?  @db.NVarChar(2000) // original comment permalink (imported)
+  approved   Boolean  @default(true)
+  createdAt  DateTime @default(now())
+
+  post Post  @relation(fields: [postId], references: [id], onDelete: Cascade)
+  user User? @relation(fields: [userId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([postId, createdAt])
+}
+
+// ─── Tags ───────────────────────────────────────────────────────
+
+model Tag {
+  id   Int     @id @default(autoincrement())
+  name String  @unique @db.NVarChar(120)
+  slug String? @db.NVarChar(150)
+
+  posts PostTag[]
+}
+
+model PostTag {
+  postId Int
+  tagId  Int
+
+  post Post @relation(fields: [postId], references: [id], onDelete: Cascade)
+  tag  Tag  @relation(fields: [tagId], references: [id], onDelete: Cascade)
+
+  @@id([postId, tagId])
+}
+
+// ─── Images ─────────────────────────────────────────────────────
+
+// Images stored in the DB (rather than the filesystem) so they survive deploys
+// and a single DB backup captures everything. Served via /api/images/[id].
+// `sourceUrl` records the original remote URL for dedupe + provenance;
+// `recoveredFrom` records how we got the bytes.
+model UploadedImage {
+  id            Int      @id @default(autoincrement())
+  data          Bytes
+  contentType   String   @db.NVarChar(100)
+  sourceUrl     String?  @db.NVarChar(2000)
+  recoveredFrom String?  @db.NVarChar(20) // LIVE, WAYBACK, UPLOAD
+  uploadedBy    Int?
+  createdAt     DateTime @default(now())
+
+  @@index([sourceUrl])
+}
+
+// ─── Import / salvage jobs ──────────────────────────────────────
+
+// Tracks long-running imports and image-salvage passes so the UI can poll
+// progress and resume.
+model ImportJob {
+  id          Int      @id @default(autoincrement())
+  blogId      Int?
+  type        String   @db.NVarChar(30) // BLOGGER_FEED, BLOGGER_XML, WAYBACK_RECONSTRUCT, IMAGE_SALVAGE
+  status      String   @default("RUNNING") @db.NVarChar(20) // RUNNING, DONE, FAILED
+  total       Int      @default(0)
+  processed   Int      @default(0)
+  succeeded   Int      @default(0)
+  failed      Int      @default(0)
+  message     String?  @db.NVarChar(Max) // human-readable status / error log
+  createdById Int?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  blog Blog? @relation(fields: [blogId], references: [id], onDelete: Cascade)
+
+  @@index([blogId, createdAt])
+}
+
+// ─── Audit log ──────────────────────────────────────────────────
+
+model AuditLog {
+  id         Int      @id @default(autoincrement())
+  createdAt  DateTime @default(now())
+  category   String   @db.NVarChar(40) // AUTH, BLOG, POST, COMMENT, IMPORT, USER, ADMIN
+  action     String   @db.NVarChar(80)
+  summary    String   @db.NVarChar(500)
+  userId     Int? // actor (null for anonymous/system)
+  actorName  String?  @db.NVarChar(200) // denormalized so it survives user deletion
+  targetType String?  @db.NVarChar(40) // BLOG, POST, COMMENT, USER
+  targetId   Int?
+  metadata   String?  @db.NVarChar(Max) // optional JSON details
+  ip         String?  @db.NVarChar(64)
+
+  @@index([createdAt])
+  @@index([category, createdAt])
+}
