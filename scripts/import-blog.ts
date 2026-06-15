@@ -7,8 +7,6 @@ import "dotenv/config";
 import { prisma } from "@/lib/prisma";
 import { fetchAllBloggerPosts, normalizeBlogUrl } from "@/lib/blogger";
 import { importBloggerData } from "@/lib/import-posts";
-import { salvagePost } from "@/lib/image-salvage";
-import { syncPostImages } from "@/lib/post-images";
 
 const blogUrl = process.argv[2];
 const OWNER_EMAIL = "smoke@blog-saver.local";
@@ -28,36 +26,6 @@ async function main() {
   const data = await fetchAllBloggerPosts(blogUrl);
   console.log(`[import] feed has ${data.posts.length} posts, ${data.comments.length} comments`);
   const sum = await importBloggerData(blog.id, data);
-  console.log(`[import] done: ${sum.imported} new, ${sum.updated} updated, ${sum.importedComments} comments into blog ${blog.id}`);
-
-  console.log(`[rescue] starting image rescue over all posts ...`);
-  const posts = await prisma.post.findMany({
-    where: { blogId: blog.id },
-    orderBy: { id: "asc" },
-    select: { id: true, heroImageUrl: true, bodyHtml: true },
-  });
-  let converted = 0;
-  let failed = 0;
-  let throttled = 0;
-  for (let i = 0; i < posts.length; i++) {
-    const p = posts[i];
-    const r = await salvagePost(p, user.id);
-    if (r.changed) {
-      await prisma.post.update({
-        where: { id: p.id },
-        data: { heroImageUrl: r.heroImageUrl, bodyHtml: r.bodyHtml, imageLocalizeFailed: r.heroFailed },
-      });
-      await syncPostImages(p.id, r.heroImageUrl, r.bodyHtml);
-    } else if (r.heroFailed) {
-      await prisma.post.update({ where: { id: p.id }, data: { imageLocalizeFailed: true } });
-    }
-    converted += r.converted;
-    failed += r.failed;
-    throttled += r.throttled;
-    if (i % 25 === 0 || i === posts.length - 1) {
-      console.log(`[rescue] ${i + 1}/${posts.length}: ${converted} localized, ${failed} unrecoverable, ${throttled} throttled`);
-    }
-  }
-  console.log(`[done] imported ${sum.imported} new posts; images: ${converted} localized, ${failed} unrecoverable, ${throttled} throttled (re-run later for throttled).`);
+  console.log(`[done] imported ${sum.imported} new, ${sum.updated} updated, ${sum.importedComments} comments into blog ${blog.id}. Run scripts/rescue-blog.ts to self-host images.`);
 }
 main().then(() => process.exit(0)).catch((e) => { console.error("[FAILED]", e); process.exit(1); });
