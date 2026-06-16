@@ -19,6 +19,7 @@ import {
   Globe,
   EyeOff,
   Rss,
+  Mail,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -244,6 +245,9 @@ export function BlogManager({ blog, canDelete }: { blog: ManagedBlog; canDelete:
           <div className="flex flex-wrap gap-3 pt-1 text-xs">
             <Link href={`/dashboard/import?blogId=${blog.id}`} className="inline-flex items-center gap-1 text-primary hover:underline">
               <Rss className="h-3.5 w-3.5" /> Import more posts into this blog
+            </Link>
+            <Link href={`/dashboard/blogs/${blog.id}/import-email`} className="inline-flex items-center gap-1 text-primary hover:underline">
+              <Mail className="h-3.5 w-3.5" /> Import from email (mission letters)
             </Link>
           </div>
         </CardContent>
