@@ -41,7 +41,20 @@ npm run db:push           # create the schema
 npm run dev
 ```
 
-Open http://localhost:3000. The **first account to register becomes the admin.**
+Open http://localhost:3000 and register an account.
+
+To give yourself the **admin** role (access across every blog, not just your
+own), add your address to `ADMIN_EMAILS` in `.env` *before* you register:
+
+```bash
+ADMIN_EMAILS=you@example.com
+```
+
+Leave it unset and no account is auto-promoted. That is deliberate: on a
+reachable deployment, granting admin to whoever registers first would hand
+cross-blog access to anyone who found the instance. The app is fully usable
+with no admin at all, since users own and manage their own blogs.
+
 Then: create a blog, or Import / Recover one; run **Rescue images**; write or edit
 posts; publish the blog to make it public at `/blog/<slug>`.
 

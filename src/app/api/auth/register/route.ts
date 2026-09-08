@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { normalizeEmail } from "@/lib/email-normalize";
 import { audit } from "@/lib/audit";
 import { enforceRateLimit, ipKey } from "@/lib/rate-limit";
+import { isAllowlistedAdmin } from "@/lib/admin-allowlist";
 
 export async function POST(request: NextRequest) {
   const limited = enforceRateLimit("register", ipKey(request), 5, 60 * 60_000);
@@ -35,9 +36,10 @@ export async function POST(request: NextRequest) {
 
   const passwordHash = await bcrypt.hash(password, 12);
 
-  // The very first account to register becomes the admin.
-  const userCount = await prisma.user.count();
-  const systemRole = userCount === 0 ? "ADMIN" : "USER";
+  // ADMIN is granted only to addresses named in ADMIN_EMAILS. It is not
+  // inferred from being first to register: on a public deployment that would
+  // hand cross-blog access to whoever found the instance first.
+  const systemRole = isAllowlistedAdmin(email) ? "ADMIN" : "USER";
 
   const user = await prisma.user.create({
     data: { name: String(name).slice(0, 200), email, passwordHash, systemRole },
