@@ -85,3 +85,7 @@ Useful scripts:
 - **Security:** all outbound fetches (import, salvage, recovery) go through the
   SSRF guard; third-party HTML is sanitized on both write and render; private and
   draft images are not publicly readable.
+
+## License
+
+[MIT](LICENSE). Copyright (c) 2026 John Higginson.
